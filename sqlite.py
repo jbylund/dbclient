@@ -7,7 +7,11 @@ import readline  # not to be confused with the builtin
 import sys
 import time
 import sqlite3
+import logging
+import traceback
 
+
+logger = logging.getLogger(__file__ if __name__ == "__main__" else __name__)
 
 def toserial(obj):
     try:
@@ -31,9 +35,8 @@ class CLI(object):
 
         readline.set_completer(self._completion)
         readline.parse_and_bind('tab: complete')
-        self.keywords = [
+        self.keywords = set([
             "ALTER",
-            "ANALYZE",
             "AND",
             "ATTACH",
             "BEGIN",
@@ -55,6 +58,7 @@ class CLI(object):
             "INSERT",
             "JOIN",
             "LEFT",
+            "LIMIT",
             "ON",
             "OR",
             "OUTER",
@@ -76,9 +80,9 @@ class CLI(object):
             "VIRTUAL",
             "WHERE",
             "WITH",
-        ]
+        ])
 
-    def query_has(self, current_text, keyword):
+    def query_has(self, keyword):
         current_words = readline.get_line_buffer().strip().lower().split()
         return keyword.lower() in current_words
 
@@ -88,25 +92,53 @@ class CLI(object):
 
 
     def _completion(self, needle, state):
+        try:
+            return self.__completion(needle, state)
+        except:
+            print(traceback.format_exc())
+            raise
+
+    def get_last_keyword(self):
+        cur_words = self.get_current_words()
+        while cur_words:
+            if cur_words[-1] in self.keywords:
+                return cur_words[-1]
+            cur_words.pop()
+
+    def get_current_words(self):
+        return (readline.get_line_buffer() + "|").upper().split()
+
+
+    def __completion(self, needle, state):
         current_text = readline.get_line_buffer()
         needle = needle.upper()
-        current_words = current_text.lower().split()
-        if self.query_has("from"):
-        (
-            (    current_text.endswith(' ') and 'from' in current_words[-1:]) or #
-            (not current_text.endswith(' ') and 'from' in current_words[-2:-1])
-        ):
+        matches = []
+        current_words = self.get_current_words()
+        last_keyword = self.get_last_keyword() or ""
+        if 2 < len(current_words) and "FROM" == current_words[-2]:
+            # match from tablenames
             matches = [
                 tablename
                 for tablename in self._get_tablenames()
                 if tablename.upper().startswith(needle)
             ]
+        elif 2 < len(current_words) and "WHERE" == current_words[-2]:
+            # autocomplete to columns in tables that are mentioned
+            matches = set()
+            for itable in self._get_tablenames():
+                if itable.upper() in current_words:
+                    matches.update(c.upper() for c in self.get_columns_for_table(itable))
+            matches = sorted(c for c in matches if c.startswith(needle))
         else:
             matches = [x for x in self.keywords if x.startswith(needle)]
         try:
             return matches[state] + " "
         except IndexError:
             return  # non-string return value means we're done
+
+    def get_columns_for_table(self, table):
+        self.cursor.execute(f"SELECT * FROM {table} WHERE FALSE")
+        return (c[0] for c in self.cursor.description)
 
     def _get_in_txn_str(self):
         if self.connection.in_transaction:
@@ -219,6 +251,7 @@ def get_args():
 
 def main():
     args = get_args()
+    logging.basicConfig(level=logging.INFO)
     CLI(**args).repl()
 
 
